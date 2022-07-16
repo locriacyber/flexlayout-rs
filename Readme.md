@@ -12,3 +12,7 @@ You should use this library like this:
 2b. Draw UI
 
 Since layout is defined before event handling (unlike imgui), every frame can be perfect.
+
+## TODO
+
+- [ ] This algorithm can be easily extended to other euclidean geometry. Maybe it's useful?

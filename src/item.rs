@@ -10,15 +10,17 @@ pub struct Id(pub(crate) u32);
 #[derive(Debug)]
 pub struct Item {
     pub flags: ItemFlags,
+    /// ltrb
     pub margins: Vec4,
-    pub size: Vec2,
+    /// Leave None to automatically get size
+    pub size: Option<Vec2>,
     pub(crate) first_child: Option<Id>,
     pub(crate) next_sibling: Option<Id>,
 }
 
 impl Item {
     pub fn clear_item_break(&mut self) {
-        self.flags.as_child.break_line = false;
+        self.flags.as_child.wrap_me = false;
     }
 }
 
@@ -27,7 +29,7 @@ impl Default for Item {
         Self {
             flags: Default::default(),
             margins: Default::default(),
-            size: Default::default(),
+            size: None,
             first_child: None,
             next_sibling: None,
         }
@@ -45,18 +47,47 @@ pub struct ItemFlags {
 pub enum Layout {
     #[default]
     Fixed,
-    FlexRow,
-    FlexColumn,
+    Flex(DimensionE),
 }
 
-/// flags for being as parent
+#[derive(Clone, Debug)]
+pub enum DimensionE {
+    Row,
+    Column,
+}
+
+impl Into<usize> for DimensionE {
+    fn into(self) -> usize {
+        match self {
+            DimensionE::Row => 0,
+            DimensionE::Column => 1,
+        }
+    }
+}
+
+impl TryFrom<usize> for DimensionE {
+    type Error = ();
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Row),
+            1 => Ok(Self::Column),
+            _ => Err(())
+        }
+    }
+}
+
+// impl Layout 
+// pub const FlexRow = Self::Flex(0);
+
+/// flags for being as container for other rectangles
 /// control layout of children
 #[derive(Default, Clone, Debug)]
 pub struct AsParentFlags {
     /// use flex model or not
     pub layout: Layout,
     /// wrap around line or not
-    pub wrap_line: bool,
+    pub allow_wrap: bool,
     pub alignment: Alignment,
 }
 
@@ -71,8 +102,8 @@ pub struct AsChildFlags {
     pub top: bool,
     /// anchor to parent's bottom side
     pub bottom: bool,
-
-    pub break_line: bool,
+    /// whether it'll be wrapped to be start of a new line
+    pub wrap_me: bool,
 }
 
 #[derive(Default, Clone, Debug)]
