@@ -2,7 +2,8 @@ use crate::Alignment;
 use crate::Vec2;
 use crate::Vec4;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// todo: add guard or lifetime constraint to make this only usable in 1 Context
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Id(pub(crate) u32);
 
 /// Mostly a rectangle
