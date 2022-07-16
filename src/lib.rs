@@ -1,36 +1,51 @@
 pub mod error;
-mod item;
+pub mod item;
+pub mod numbers;
 
-use error::ItemNotFound;
+use error::*;
 use item::*;
+use numbers::*;
 
 pub type Scalar = i16;
 
-type Vec2 = [Scalar; 2];
-type Vec4 = [Scalar; 4];
+#[derive(Debug, Clone)]
+struct ItemWithCalcSize<const ND: usize> {
+    item: Item<ND>,
+    position: [Scalar; ND],
+    size: [Scalar; ND],
+}
 
-type ItemWithCalcSize = (Item, Vec4);
+impl<const ND: usize> Default for ItemWithCalcSize<ND> {
+    fn default() -> Self {
+        Self {
+            item: Default::default(),
+            position: [Default::default(); ND],
+            size: [Default::default(); ND],
+        }
+    }
+}
 
-struct ExtentAndMargins {
+#[derive(Debug, Clone)]
+struct ExtentAndMargins<const ND: usize> {
     pub margin_start: Scalar,
     pub extent: Scalar,
     pub margin_end: Scalar,
-    pub flags: ItemFlags,
+    pub flags: ItemFlags<ND>,
 }
 
-#[derive(Debug)]
-pub struct Context {
+#[derive(Debug, Clone)]
+pub struct Context<const ND: usize> {
     last_id: Id,
-    pub(crate) items: std::collections::BTreeMap<Id, ItemWithCalcSize>,
+    pub(crate) items: std::collections::BTreeMap<Id, ItemWithCalcSize<ND>>,
 }
 
-impl Default for Context {
+impl<const ND: usize> Default for Context<ND> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Context {
+impl<const ND: usize> Context<ND> {
     pub fn new() -> Self {
         let items = Default::default();
         Self {
@@ -63,29 +78,39 @@ impl Context {
             maybe_r = r_item.next_sibling;
         }
 
-        let (item, rect) = self.item_rect_mut_err(item_id)?;
-        
+        let ItemWithCalcSize {
+            item,
+            position: rect_pos,
+            size: rect_size,
+        } = self.item_rect_mut_err(item_id)?;
+
         // early return if size specified by user
-        if let Some(size) = item.size {
-            rect[dim] = item.margins[dim];
-            rect[dim + 2] = size[dim];
+        if let Some(size) = item.size[dim] {
+            rect_pos[dim] = item.margins[dim].start;
+            rect_size[dim] = size;
             return Ok(());
         }
         let flags_as_parent = item.flags.as_parent.clone();
 
         let calc_size = match flags_as_parent.layout {
             Layout::Fixed => self.calc_cross_axis(item_id, dim, false)?,
-            Layout::Flex(along_dim) => if dim == along_dim.into() {
-                self.calc_along_axis(item_id, 0, flags_as_parent.allow_wrap)?
-            } else {
-                self.calc_cross_axis(item_id, 1, flags_as_parent.allow_wrap)?
-            },
+            Layout::Flex(along_dim) => {
+                if dim == along_dim.into() {
+                    self.calc_along_axis(item_id, 0, flags_as_parent.allow_wrap)?
+                } else {
+                    self.calc_cross_axis(item_id, 1, flags_as_parent.allow_wrap)?
+                }
+            }
         };
 
         // dance with borrow checker
-        let (item, rect) = self.item_rect_mut_err(item_id)?;
-        rect[dim] = item.margins[dim];
-        rect[dim + 2] = calc_size;
+        let ItemWithCalcSize {
+            item,
+            position: rect_pos,
+            size: rect_size,
+        } = self.item_rect_mut_err(item_id)?;
+        rect_pos[dim] = item.margins[dim].start;
+        rect_size[dim] = calc_size;
 
         Ok(())
     }
@@ -94,20 +119,22 @@ impl Context {
         &mut self,
         start_at: Option<Id>,
         dim: usize,
-    ) -> Result<impl IntoIterator<Item = ExtentAndMargins>, ItemNotFound> {
+    ) -> Result<impl IntoIterator<Item = ExtentAndMargins<ND>>, ItemNotFound> {
         // IMPROVE: make this iterator
         let mut r = vec![];
         let mut maybe_child_id = start_at;
 
         while let Some(child_id) = maybe_child_id {
-            let (item, rect) = self.item_rect_err(child_id)?;
+            let ItemWithCalcSize {
+                item,
+                position: _,
+                size: rect_size,
+            } = self.item_rect_err(child_id)?;
             r.push(ExtentAndMargins {
                 flags: item.flags.clone(),
-                margin_start: item.margins[dim],
-                // HACK: + 2 is for 2 dimensions
-                // maybe make this higher dimensions in the future
-                extent: rect[dim + 2],
-                margin_end: item.margins[dim + 2],
+                margin_start: item.margins[dim].start,
+                extent: rect_size[dim],
+                margin_end: item.margins[dim].end,
             });
             maybe_child_id = item.next_sibling;
         }
@@ -118,7 +145,7 @@ impl Context {
         &mut self,
         item_id: Id,
         dim: usize,
-    ) -> Result<impl IntoIterator<Item = ExtentAndMargins>, ItemNotFound> {
+    ) -> Result<impl IntoIterator<Item = ExtentAndMargins<ND>>, ItemNotFound> {
         let item = self.item_err(item_id)?;
         self.calc_siblings_extent_margins(item.first_child, dim)
     }
@@ -181,8 +208,7 @@ impl Context {
     /// add new item with no parent and no children
     pub fn item_new(&mut self) -> &Id {
         self.last_id.0 += 1;
-        self.items
-            .insert(self.last_id, (Item::default(), [0, 0, 0, 0]));
+        self.items.insert(self.last_id, Default::default());
         &self.last_id
     }
 
@@ -194,22 +220,25 @@ impl Context {
         self.items.len()
     }
 
-    pub fn item(&self, item_id: Id) -> Option<&Item> {
-        self.items.get(&item_id).map(|x| &(*x).0)
+    pub fn item(&self, item_id: Id) -> Option<&Item<ND>> {
+        self.items.get(&item_id).map(|x| &x.item)
     }
 
-    pub fn item_mut(&mut self, item_id: Id) -> Option<&mut Item> {
-        self.items.get_mut(&item_id).map(|x| &mut (*x).0)
+    pub fn item_mut(&mut self, item_id: Id) -> Option<&mut Item<ND>> {
+        self.items.get_mut(&item_id).map(|x| &mut x.item)
     }
 
-    fn item_rect_err(&self, item_id: Id) -> Result<&ItemWithCalcSize, ItemNotFound> {
+    fn item_rect_err(&self, item_id: Id) -> Result<&ItemWithCalcSize<ND>, ItemNotFound> {
         match self.items.get(&item_id) {
             Some(x) => Ok(x),
             None => Err(ItemNotFound(item_id)),
         }
     }
 
-    fn item_rect_mut_err(&mut self, item_id: Id) -> Result<&mut ItemWithCalcSize, ItemNotFound> {
+    fn item_rect_mut_err(
+        &mut self,
+        item_id: Id,
+    ) -> Result<&mut ItemWithCalcSize<ND>, ItemNotFound> {
         match self.items.get_mut(&item_id) {
             Some(x) => Ok(x),
             None => Err(ItemNotFound(item_id)),
@@ -217,7 +246,7 @@ impl Context {
     }
 
     /// Error version of `self.item`
-    pub fn item_err(&self, item_id: Id) -> Result<&Item, ItemNotFound> {
+    pub fn item_err(&self, item_id: Id) -> Result<&Item<ND>, ItemNotFound> {
         match self.item(item_id) {
             Some(x) => Ok(x),
             None => Err(ItemNotFound(item_id)),
@@ -225,7 +254,7 @@ impl Context {
     }
 
     /// Error version of `self.item_mut`
-    pub fn item_mut_err(&mut self, item_id: Id) -> Result<&mut Item, ItemNotFound> {
+    pub fn item_mut_err(&mut self, item_id: Id) -> Result<&mut Item<ND>, ItemNotFound> {
         match self.item_mut(item_id) {
             Some(x) => Ok(x),
             None => Err(ItemNotFound(item_id)),
@@ -295,13 +324,4 @@ impl Context {
         }
         Ok(())
     }
-}
-
-#[derive(Default, Clone, Debug)]
-pub enum Alignment {
-    #[default]
-    Start,
-    Center,
-    End,
-    Justify,
 }
