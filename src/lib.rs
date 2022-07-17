@@ -193,7 +193,12 @@ impl<const ND: usize> Context<ND> {
             Layout::Fixed => self.arrange_cross_axis(item_id, dim, false)?,
             Layout::Flex(along_dim) => {
                 if dim == along_dim {
-                    self.arrange_along_axis(item_id, dim, flags_as_parent.allow_wrap)?;
+                    self.arrange_along_axis(
+                        item_id,
+                        dim,
+                        flags_as_parent.allow_wrap,
+                        flags_as_parent.allow_wrap,
+                    )?;
                 } else {
                     self.arrange_cross_axis(item_id, dim, flags_as_parent.allow_wrap)?;
                 }
@@ -217,8 +222,96 @@ impl<const ND: usize> Context<ND> {
         item_id: Id,
         dim: Fin<ND>,
         allow_wrap: bool,
+        auto_wrap: bool,
     ) -> Result<(), ItemNotFound> {
-        todo!()
+        let pxx = self.item_rect_mut_err(item_id)?;
+        let offset = pxx.position[dim.into_usize()];
+        let space = pxx.size[dim.into_usize()];
+        let alignment = pxx.item.flags.as_parent.alignment_along_axis;
+
+        let mut current_child_id = pxx.item.first_child;
+        let mut gaps_before: Vec<(Id, Scalar)> = vec![];
+
+        while current_child_id.is_some() {
+            let line_start = current_child_id;
+            let mut items_on_this_line = 0;
+            let mut acc_line_size = 0;
+            let mut last_margin_end = 0;
+
+            'arrange_one_line: while let Some(child_id) = current_child_id {
+                let xx = self.item_rect_mut_err(child_id)?;
+                let item = &mut xx.item;
+                let size = xx.size[dim.into_usize()];
+                let margin = item.margins[dim.into_usize()].clone();
+                let next_sibling_id = item.next_sibling;
+
+                let first_in_line = line_start != current_child_id;
+                let break_early = acc_line_size + last_margin_end > space;
+                if ((allow_wrap && item.flags.as_child.wrap_me) || (auto_wrap && break_early))
+                    && first_in_line
+                {
+                    acc_line_size += last_margin_end;
+                    break 'arrange_one_line;
+                }
+                items_on_this_line += 1;
+                let min_inner_margin = Scalar::max(last_margin_end, margin.start);
+                gaps_before.push((child_id, min_inner_margin));
+                acc_line_size += min_inner_margin;
+                last_margin_end = margin.end;
+                acc_line_size += size;
+
+                current_child_id = next_sibling_id;
+            }
+
+            if items_on_this_line > 0 {
+                let extra_space = space - acc_line_size;
+
+                match (alignment.front, alignment.back) {
+                    // start
+                    (true, false) => {
+                        // extra space in the end, do nothing
+                    }
+                    // center
+                    (false, false) => {
+                        gaps_before[0].1 += extra_space / 2;
+                    }
+                    // end
+                    (false, true) => {
+                        // space all in front
+                        gaps_before[0].1 += extra_space;
+                    }
+                    // space-between
+                    (true, true) => {
+                        enlarge_gaps_inbetween(&mut gaps_before, extra_space);
+                    }
+                }
+                self.arrange_along_axis_range(dim, offset, &gaps_before)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn arrange_along_axis_range(
+        &mut self,
+        dim: Fin<ND>,
+        mut offset: Scalar,
+        gaps_before: &[(Id, Scalar)],
+    ) -> Result<(), ItemNotFound> {
+        if gaps_before.is_empty() {
+            Ok(())
+        } else {
+            let (item_id, gap_before) = gaps_before[0];
+            offset += gap_before;
+
+            let xx = self.item_rect_mut_err(item_id)?;
+            let position = &mut xx.position[dim.into_usize()];
+            let size = &mut xx.size[dim.into_usize()];
+
+            *position = offset;
+            offset += *size;
+            self.arrange_along_axis_range(dim, offset, &gaps_before[1..])
+        }
     }
 
     fn arrange_cross_axis(
@@ -228,13 +321,13 @@ impl<const ND: usize> Context<ND> {
         allow_wrap: bool,
     ) -> Result<(), ItemNotFound> {
         let pxx = self.item_rect_mut_err(item_id)?;
-        let parent_pos = pxx.position[dim.into_usize()];
+        let offset = pxx.position[dim.into_usize()];
         let space = pxx.size[dim.into_usize()];
         let mut current_child_id = pxx.item.first_child;
 
         // if not allowed to wrap, then process all children in one go without backtracking
         if !allow_wrap {
-            return self.arrange_cross_axis_range(dim, current_child_id, None, parent_pos, space);
+            return self.arrange_cross_axis_range(dim, current_child_id, None, offset, space);
         }
 
         let mut acc_cross_axis_size = 0;
@@ -252,7 +345,7 @@ impl<const ND: usize> Context<ND> {
                 let size_with_margin = *size + margin.start + margin.end;
                 let next_sibling_id = item.next_sibling;
 
-                if item.flags.as_child.wrap_me {
+                if line_start != current_child_id && item.flags.as_child.wrap_me {
                     break 'arrange_one_line;
                 }
 
@@ -265,7 +358,7 @@ impl<const ND: usize> Context<ND> {
                 dim,
                 line_start,
                 current_child_id,
-                parent_pos + acc_cross_axis_size,
+                offset + acc_cross_axis_size,
                 max_cross_axis_size,
             )?;
             acc_cross_axis_size += max_cross_axis_size;
@@ -273,6 +366,7 @@ impl<const ND: usize> Context<ND> {
 
         let pxx = self.item_rect_mut_err(item_id)?;
         let space = &mut pxx.size[dim.into_usize()];
+        // TODO: is this really necessary?
         *space = acc_cross_axis_size;
 
         Ok(())
@@ -467,5 +561,26 @@ impl<const ND: usize> Context<ND> {
             }
         }
         Ok(())
+    }
+}
+
+/// Chop a line into pixel-perfect pieces
+/// chop(X, 0) => []
+/// chop(X, X) => [X]
+/// chop(9, 2) => [5, 4]
+/// chop(18, 4) => [5, 4, 5, 4]
+fn enlarge_gaps_inbetween(gaps_before: &mut Vec<(Id, i16)>, extra_space: i16) {
+    let n = gaps_before.len() as Scalar;
+    let n = if n >= 2 { n - 1 } else { return };
+
+    let segment = extra_space / n;
+    let extra_space = extra_space - segment * n;
+
+    for i in 1..n {
+        gaps_before[i as usize].1 += if i <= extra_space {
+            segment + 1
+        } else {
+            segment
+        };
     }
 }
