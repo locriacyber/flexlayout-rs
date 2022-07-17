@@ -191,7 +191,87 @@ impl<const ND: usize> Context<ND> {
     }
 
     fn arrange(&mut self, item_id: Id, dim: Fin<ND>) -> Result<(), ItemNotFound> {
-        unimplemented!()
+        let item = self.item_err(item_id)?;
+        let flags_as_parent = item.flags.as_parent.clone();
+
+        // layout direct children
+        match flags_as_parent.layout {
+            Layout::Fixed => self.arrange_cross_axis(item_id, dim, false)?,
+            Layout::Flex(along_dim) => {
+                if dim == along_dim {
+                    self.arrange_along_axis(item_id, dim, flags_as_parent.allow_wrap)?;
+                } else {
+                    self.arrange_cross_axis(item_id, dim, flags_as_parent.allow_wrap)?;
+                }
+            }
+        }
+
+        // recursive call to layout children's children and so on
+        let item = self.item_err(item_id)?;
+        let mut maybe_r = item.first_child;
+        while let Some(r_id) = maybe_r {
+            self.arrange(r_id, dim)?;
+            let r_item = self.item_err(r_id)?;
+            maybe_r = r_item.next_sibling;
+        }
+
+        Ok(())
+    }
+
+    fn arrange_along_axis(
+        &mut self,
+        item_id: Id,
+        dim: Fin<ND>,
+        allow_wrap: bool,
+    ) -> Result<(), ItemNotFound> {
+        todo!()
+    }
+
+    fn arrange_cross_axis(
+        &mut self,
+        item_id: Id,
+        dim: Fin<ND>,
+        allow_wrap: bool,
+    ) -> Result<(), ItemNotFound> {
+        let pxx = self.item_rect_mut_err(item_id)?;
+        let offset = pxx.pos[dim.into_usize()];
+        let space = pxx.size[dim.into_usize()];
+        let mut maybe_child_id = pxx.item.first_child;
+        while let Some(child_id) = maybe_child_id {
+            let ItemWithCalcSize { item, position: _position, size: _size } = self.item_rect_mut_err(child_id)?;
+            let pos_d = &mut _position[dim.into_usize()];
+            let size_d = &mut _size[dim.into_usize()];
+            let alignment = item.flags.as_child.alignment_cross_axis[dim.into_usize()].clone();
+            let margin = item.margins[dim.into_usize()].clone();
+
+            // this is set in calc_size
+            // IMPROVE: change this to be set here
+            // *pos_d = margin
+
+            match (alignment.front, alignment.back) {
+                // fill
+                (true, true) => {
+                    *size_d = Scalar::max(0, space - margin.start - margin.end);
+                },
+                // start
+                (true, false) => {
+                    // do nothing
+                },
+                // end
+                (false, true) => {
+                    *pos_d += space - *size_d - margin.start - margin.end;
+                },
+                // center
+                (false, false) => {
+                    *pos_d += (space - *size_d) / 2 - margin.end;
+                },
+            }
+
+            *pos_d += offset;
+            
+            maybe_child_id = item.next_sibling;
+        }
+        Ok(())
     }
 
     // ======

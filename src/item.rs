@@ -102,6 +102,8 @@ pub struct AsChildFlags<const ND: usize> {
     /// |       -----  |   |  ----- |
     /// |       | E |  | J |        |
     /// |       -----  -----        |
+    /// 
+    /// note: in the dimension along axis, this value is ignored
     pub alignment_cross_axis: [Alignment; ND],
     /// whether it'll be wrapped to be start of a new line
     pub wrap_me: bool,
