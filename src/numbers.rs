@@ -1,8 +1,8 @@
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fin<const ND: usize>(usize);
 
-impl<const ND: usize> Into<usize> for Fin<ND> {
-    fn into(self) -> usize {
+impl<const ND: usize> Fin<ND> {
+    pub fn into_usize(self) -> usize {
         self.0
     }
 }

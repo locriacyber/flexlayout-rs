@@ -61,14 +61,16 @@ impl<const ND: usize> Context<ND> {
         unimplemented!()
     }
     pub fn run_item(&mut self, item_id: Id) -> Result<(), ItemNotFound> {
-        self.calc_size(item_id, 0)?;
-        self.calc_size(item_id, 1)?;
-        self.arrange(item_id, 0)?;
-        self.arrange(item_id, 1)?;
+        for i in 0..ND {
+            self.calc_size(item_id, i.try_into().unwrap())?;
+        }
+        for i in 0..ND {
+            self.arrange(item_id, i.try_into().unwrap())?;
+        }
         Ok(())
     }
 
-    fn calc_size(&mut self, item_id: Id, dim: usize) -> Result<(), ItemNotFound> {
+    fn calc_size(&mut self, item_id: Id, dim: Fin<ND>) -> Result<(), ItemNotFound> {
         // recursively call calc_size
         let parent = self.item_err(item_id)?;
         let mut maybe_r = parent.first_child;
@@ -85,9 +87,9 @@ impl<const ND: usize> Context<ND> {
         } = self.item_rect_mut_err(item_id)?;
 
         // early return if size specified by user
-        if let Some(size) = item.size[dim] {
-            rect_pos[dim] = item.margins[dim].start;
-            rect_size[dim] = size;
+        if let Some(size) = item.size[dim.into_usize()] {
+            rect_pos[dim.into_usize()] = item.margins[dim.into_usize()].start;
+            rect_size[dim.into_usize()] = size;
             return Ok(());
         }
         let flags_as_parent = item.flags.as_parent.clone();
@@ -95,10 +97,10 @@ impl<const ND: usize> Context<ND> {
         let calc_size = match flags_as_parent.layout {
             Layout::Fixed => self.calc_cross_axis(item_id, dim, false)?,
             Layout::Flex(along_dim) => {
-                if dim == along_dim.into() {
-                    self.calc_along_axis(item_id, 0, flags_as_parent.allow_wrap)?
+                if dim == along_dim {
+                    self.calc_along_axis(item_id, dim, flags_as_parent.allow_wrap)?
                 } else {
-                    self.calc_cross_axis(item_id, 1, flags_as_parent.allow_wrap)?
+                    self.calc_cross_axis(item_id, dim, flags_as_parent.allow_wrap)?
                 }
             }
         };
@@ -109,45 +111,51 @@ impl<const ND: usize> Context<ND> {
             position: rect_pos,
             size: rect_size,
         } = self.item_rect_mut_err(item_id)?;
-        rect_pos[dim] = item.margins[dim].start;
-        rect_size[dim] = calc_size;
+        rect_pos[dim.into_usize()] = item.margins[dim.into_usize()].start;
+        rect_size[dim.into_usize()] = calc_size;
 
         Ok(())
     }
 
-    fn calc_siblings_extent_margins(
+    // pub fn iter_children(
+    fn foreach_mut_children_rect(
         &mut self,
-        start_at: Option<Id>,
-        dim: usize,
-    ) -> Result<impl IntoIterator<Item = ExtentAndMargins<ND>>, ItemNotFound> {
-        // IMPROVE: make this iterator
-        let mut r = vec![];
-        let mut maybe_child_id = start_at;
+        parent_id: Id,
+        mut callback: impl FnMut(&mut ItemWithCalcSize<ND>) -> Result<(), ItemNotFound>,
+    ) -> Result<(), ItemNotFound> {
+        let parent = self.item_err(parent_id)?;
+        let mut maybe_child_id = parent.first_child;
 
         while let Some(child_id) = maybe_child_id {
-            let ItemWithCalcSize {
-                item,
-                position: _,
-                size: rect_size,
-            } = self.item_rect_err(child_id)?;
-            r.push(ExtentAndMargins {
-                flags: item.flags.clone(),
-                margin_start: item.margins[dim].start,
-                extent: rect_size[dim],
-                margin_end: item.margins[dim].end,
-            });
-            maybe_child_id = item.next_sibling;
+            let current_child = self.item_rect_mut_err(child_id)?;
+            callback(current_child)?;
+            maybe_child_id = current_child.item.next_sibling;
         }
-        Ok(r)
+        Ok(())
     }
 
     fn calc_extent_margins(
         &mut self,
-        item_id: Id,
-        dim: usize,
-    ) -> Result<impl IntoIterator<Item = ExtentAndMargins<ND>>, ItemNotFound> {
-        let item = self.item_err(item_id)?;
-        self.calc_siblings_extent_margins(item.first_child, dim)
+        parent_id: Id,
+        dim: Fin<ND>,
+        mut callback: impl FnMut(ExtentAndMargins<ND>) -> Result<(), ItemNotFound>,
+    ) -> Result<(), ItemNotFound> {
+        self.foreach_mut_children_rect(
+            parent_id,
+            |ItemWithCalcSize {
+                 item,
+                 position: _,
+                 size: rect_size,
+             }| {
+                let r = ExtentAndMargins {
+                    flags: item.flags.clone(),
+                    margin_start: item.margins[dim.into_usize()].start,
+                    extent: rect_size[dim.into_usize()],
+                    margin_end: item.margins[dim.into_usize()].end,
+                };
+                callback(r)
+            },
+        )
     }
 
     /// [ a ]
@@ -158,12 +166,12 @@ impl<const ND: usize> Context<ND> {
     fn calc_cross_axis(
         &mut self,
         item_id: Id,
-        dim: usize,
+        dim: Fin<ND>,
         respect_line_break: bool,
     ) -> Result<Scalar, ItemNotFound> {
         let mut max_size = 0;
         let mut hist_acc_size = 0;
-        for xx in self.calc_extent_margins(item_id, dim)? {
+        self.calc_extent_margins(item_id, dim, |xx| {
             if respect_line_break && xx.flags.as_child.wrap_me {
                 hist_acc_size += max_size;
                 max_size = 0;
@@ -171,7 +179,8 @@ impl<const ND: usize> Context<ND> {
             // IMPROVE: return ExtentAndMargins, not Scalar
             // align left or right has a different
             max_size = Scalar::max(max_size, xx.margin_start + xx.extent + xx.margin_end);
-        }
+            Ok(())
+        })?;
         Ok(max_size + hist_acc_size)
     }
 
@@ -180,24 +189,25 @@ impl<const ND: usize> Context<ND> {
     fn calc_along_axis(
         &mut self,
         item_id: Id,
-        dim: usize,
+        dim: Fin<ND>,
         respect_line_break: bool,
     ) -> Result<Scalar, ItemNotFound> {
         let mut acc_size = 0;
         let mut hist_max_size = 0;
         let mut last_margin_end = 0;
-        for xx in self.calc_extent_margins(item_id, dim)? {
+        self.calc_extent_margins(item_id, dim, |xx| {
             if respect_line_break && xx.flags.as_child.wrap_me {
                 hist_max_size = Scalar::max(acc_size, hist_max_size);
                 acc_size = 0;
             }
             acc_size += Scalar::max(last_margin_end, xx.margin_start) + xx.extent + xx.margin_end;
             last_margin_end = xx.margin_end;
-        }
+            Ok(())
+        })?;
         Ok(Scalar::max(acc_size, hist_max_size))
     }
 
-    fn arrange(&mut self, item_id: Id, dim: usize) -> Result<(), ItemNotFound> {
+    fn arrange(&mut self, item_id: Id, dim: Fin<ND>) -> Result<(), ItemNotFound> {
         unimplemented!()
     }
 

@@ -15,4 +15,4 @@ Since layout is defined before event handling (unlike imgui), every frame can be
 
 ## TODO
 
-- [ ] This algorithm can be easily extended to other euclidean geometry. Maybe it's useful?
+- [x] This algorithm has been extended to other euclidean geometry. Maybe it's useful?
