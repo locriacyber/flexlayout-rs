@@ -11,7 +11,7 @@ use numbers::*;
 pub type Scalar = i16;
 
 #[derive(Debug, Clone)]
-struct ItemWithCalcSize<const ND: usize> {
+pub struct ItemWithCalcSize<const ND: usize> {
     item: Item<ND>,
     position: [Scalar; ND],
     size: [Scalar; ND],
@@ -59,10 +59,13 @@ impl<const ND: usize> Context<ND> {
     // ======
     // run layout algorithm
     // vvvvvv
-    pub fn run() {
-        unimplemented!()
-    }
-    pub fn run_item(&mut self, item_id: Id) -> Result<(), ItemNotFound> {
+
+    /// Layout a directed tree of items
+    /// 
+    /// Make sure you don't have cyclic reference (DAG is fine), or the program will hang
+    /// 
+    ///     item_id  root of the tree
+    pub fn layout_item_recursively(&mut self, item_id: Id) -> Result<(), ItemNotFound> {
         for i in 0..ND {
             self.calc_size(item_id, i.try_into().unwrap())?;
         }
@@ -461,14 +464,14 @@ impl<const ND: usize> Context<ND> {
         self.items.get_mut(&item_id).map(|x| &mut x.item)
     }
 
-    fn item_rect_err(&self, item_id: Id) -> Result<&ItemWithCalcSize<ND>, ItemNotFound> {
+    pub fn item_rect_err(&self, item_id: Id) -> Result<&ItemWithCalcSize<ND>, ItemNotFound> {
         match self.items.get(&item_id) {
             Some(x) => Ok(x),
             None => Err(ItemNotFound(item_id)),
         }
     }
 
-    fn item_rect_mut_err(
+    pub fn item_rect_mut_err(
         &mut self,
         item_id: Id,
     ) -> Result<&mut ItemWithCalcSize<ND>, ItemNotFound> {
