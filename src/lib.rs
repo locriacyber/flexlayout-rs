@@ -117,23 +117,6 @@ impl<const ND: usize> Context<ND> {
         Ok(())
     }
 
-    // pub fn iter_children(
-    fn foreach_mut_children_rect(
-        &mut self,
-        parent_id: Id,
-        mut callback: impl FnMut(&mut ItemWithCalcSize<ND>) -> Result<(), ItemNotFound>,
-    ) -> Result<(), ItemNotFound> {
-        let parent = self.item_err(parent_id)?;
-        let mut maybe_child_id = parent.first_child;
-
-        while let Some(child_id) = maybe_child_id {
-            let current_child = self.item_rect_mut_err(child_id)?;
-            callback(current_child)?;
-            maybe_child_id = current_child.item.next_sibling;
-        }
-        Ok(())
-    }
-
     fn calc_extent_margins(
         &mut self,
         parent_id: Id,
@@ -271,18 +254,33 @@ impl<const ND: usize> Context<ND> {
         }
     }
 
-    pub fn item_last_child(&self, parent_id: Id) -> Result<Option<Id>, ItemNotFound> {
+    // pub fn iter_children(
+    fn foreach_mut_children_rect(
+        &mut self,
+        parent_id: Id,
+        mut callback: impl FnMut(&mut ItemWithCalcSize<ND>) -> Result<(), ItemNotFound>,
+    ) -> Result<(), ItemNotFound> {
         let parent = self.item_err(parent_id)?;
-        let mut maybe_r = parent.first_child;
-        while let Some(r_id) = maybe_r {
-            let r_item = self.item_err(r_id)?;
-            if let Some(r_next) = r_item.next_sibling {
-                maybe_r = Some(r_next)
-            } else {
-                return Ok(Some(r_id));
-            }
+        let mut maybe_child_id = parent.first_child;
+
+        while let Some(child_id) = maybe_child_id {
+            let current_child = self.item_rect_mut_err(child_id)?;
+            callback(current_child)?;
+            maybe_child_id = current_child.item.next_sibling;
         }
-        Ok(None)
+        Ok(())
+    }
+
+    pub fn item_mut_last_child(
+        &mut self,
+        parent_id: Id,
+    ) -> Result<Option<&mut Item<ND>>, ItemNotFound> {
+        let mut last_child: Option<*mut Item<ND>> = None;
+        self.foreach_mut_children_rect(parent_id, |xx| {
+            last_child = Some(&mut xx.item);
+            Ok(())
+        })?;
+        Ok(last_child.map(|p| unsafe { &mut *p }))
     }
 
     // ======
@@ -322,9 +320,8 @@ impl<const ND: usize> Context<ND> {
     pub fn push_back(&mut self, parent_id: Id, child_id: Id) -> Result<(), ItemNotFound> {
         // existence check
         let _child = self.item_mut_err(child_id)?;
-        match self.item_last_child(parent_id)? {
-            Some(last_child_id) => {
-                let last_child = self.item_mut_err(last_child_id)?;
+        match self.item_mut_last_child(parent_id)? {
+            Some(last_child) => {
                 last_child.next_sibling = Some(child_id);
             }
             None => {
