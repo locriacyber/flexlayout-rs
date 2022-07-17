@@ -436,6 +436,15 @@ impl<const ND: usize> Context<ND> {
         &self.last_id
     }
 
+    /// add new item with no parent and no children
+    pub fn item_new_mut(&mut self, before_insert: impl FnOnce(&mut Item<ND>)) -> &Id {
+        self.last_id.0 += 1;
+        let mut xx: ItemWithCalcSize<ND> = Default::default();
+        before_insert(&mut xx.item);
+        self.items.insert(self.last_id, xx);
+        &self.last_id
+    }
+
     // ======
     // accessing
     // vvvvvv
