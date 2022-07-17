@@ -1,3 +1,5 @@
+#![feature(let_else)]
+
 pub mod error;
 pub mod item;
 pub mod numbers;
@@ -80,19 +82,15 @@ impl<const ND: usize> Context<ND> {
             maybe_r = r_item.next_sibling;
         }
 
-        let ItemWithCalcSize {
-            item,
-            position: rect_pos,
-            size: rect_size,
-        } = self.item_rect_mut_err(item_id)?;
+        let xx = self.item_rect_mut_err(item_id)?;
+        let size = &mut xx.size[dim.into_usize()];
+        let flags_as_parent = xx.item.flags.as_parent.clone();
 
         // early return if size specified by user
-        if let Some(size) = item.size[dim.into_usize()] {
-            rect_pos[dim.into_usize()] = item.margins[dim.into_usize()].start;
-            rect_size[dim.into_usize()] = size;
+        if let Some(user_size) = xx.item.size[dim.into_usize()] {
+            *size = user_size;
             return Ok(());
         }
-        let flags_as_parent = item.flags.as_parent.clone();
 
         let calc_size = match flags_as_parent.layout {
             Layout::Fixed => self.calc_cross_axis(item_id, dim, false)?,
@@ -106,13 +104,9 @@ impl<const ND: usize> Context<ND> {
         };
 
         // dance with borrow checker
-        let ItemWithCalcSize {
-            item,
-            position: rect_pos,
-            size: rect_size,
-        } = self.item_rect_mut_err(item_id)?;
-        rect_pos[dim.into_usize()] = item.margins[dim.into_usize()].start;
-        rect_size[dim.into_usize()] = calc_size;
+        let xx = self.item_rect_mut_err(item_id)?;
+        let size = &mut xx.size[dim.into_usize()];
+        *size = calc_size;
 
         Ok(())
     }
@@ -234,44 +228,107 @@ impl<const ND: usize> Context<ND> {
         allow_wrap: bool,
     ) -> Result<(), ItemNotFound> {
         let pxx = self.item_rect_mut_err(item_id)?;
-        let offset = pxx.pos[dim.into_usize()];
+        let parent_pos = pxx.position[dim.into_usize()];
         let space = pxx.size[dim.into_usize()];
-        let mut maybe_child_id = pxx.item.first_child;
-        while let Some(child_id) = maybe_child_id {
-            let ItemWithCalcSize { item, position: _position, size: _size } = self.item_rect_mut_err(child_id)?;
-            let pos_d = &mut _position[dim.into_usize()];
-            let size_d = &mut _size[dim.into_usize()];
-            let alignment = item.flags.as_child.alignment_cross_axis[dim.into_usize()].clone();
-            let margin = item.margins[dim.into_usize()].clone();
+        let mut current_child_id = pxx.item.first_child;
 
-            // this is set in calc_size
-            // IMPROVE: change this to be set here
-            // *pos_d = margin
+        // if not allowed to wrap, then process all children in one go without backtracking
+        if !allow_wrap {
+            return self.arrange_cross_axis_range(dim, current_child_id, None, parent_pos, space);
+        }
 
-            match (alignment.front, alignment.back) {
-                // fill
-                (true, true) => {
-                    *size_d = Scalar::max(0, space - margin.start - margin.end);
-                },
-                // start
-                (true, false) => {
-                    // do nothing
-                },
-                // end
-                (false, true) => {
-                    *pos_d += space - *size_d - margin.start - margin.end;
-                },
-                // center
-                (false, false) => {
-                    *pos_d += (space - *size_d) / 2 - margin.end;
-                },
+        let mut acc_cross_axis_size = 0;
+
+        while current_child_id.is_some() {
+            let line_start = current_child_id;
+            // current column's width
+            let mut max_cross_axis_size = 0;
+
+            'arrange_one_line: while let Some(child_id) = current_child_id {
+                let xx = self.item_rect_mut_err(child_id)?;
+                let item = &mut xx.item;
+                let size = &mut xx.size[dim.into_usize()];
+                let margin = item.margins[dim.into_usize()].clone();
+                let size_with_margin = *size + margin.start + margin.end;
+                let next_sibling_id = item.next_sibling;
+
+                if item.flags.as_child.wrap_me {
+                    break 'arrange_one_line;
+                }
+
+                max_cross_axis_size = Scalar::max(max_cross_axis_size, size_with_margin);
+
+                current_child_id = next_sibling_id;
             }
 
-            *pos_d += offset;
-            
-            maybe_child_id = item.next_sibling;
+            self.arrange_cross_axis_range(
+                dim,
+                line_start,
+                current_child_id,
+                parent_pos + acc_cross_axis_size,
+                max_cross_axis_size,
+            )?;
+            acc_cross_axis_size += max_cross_axis_size;
         }
+
+        let pxx = self.item_rect_mut_err(item_id)?;
+        let space = &mut pxx.size[dim.into_usize()];
+        *space = acc_cross_axis_size;
+
         Ok(())
+    }
+
+    fn arrange_cross_axis_range(
+        &mut self,
+        dim: Fin<ND>,
+        maybe_start_item_id: Option<Id>,
+        end_before_id: Option<Id>,
+        offset: Scalar,
+        space: Scalar,
+    ) -> Result<(), ItemNotFound> {
+        if maybe_start_item_id == end_before_id {
+            return Ok(());
+        }
+
+        let Some(item_id) = maybe_start_item_id else { return Ok(()) };
+        let xx = self.item_rect_mut_err(item_id)?;
+        let item = &mut xx.item;
+        let position = &mut xx.position[dim.into_usize()];
+        let size = &mut xx.size[dim.into_usize()];
+        let alignment = item.flags.as_child.alignment_cross_axis[dim.into_usize()].clone();
+        let margin = item.margins[dim.into_usize()].clone();
+        let next_sibling_id = item.next_sibling;
+
+        let max_size = Scalar::max(0, space - margin.start - margin.end);
+
+        match (alignment.front, alignment.back) {
+            // start
+            (true, false) => {
+                // IMPROVE: resize parent when remaining space too small
+                // or error out
+                *size = Scalar::min(*size, max_size);
+                *position = margin.start;
+            }
+            // center
+            (false, false) => {
+                *size = Scalar::min(*size, max_size);
+                *position = (space - *size) / 2;
+            }
+            // end
+            (false, true) => {
+                *size = Scalar::min(*size, max_size);
+                *position = space - *size - margin.end;
+            }
+            // fill
+            (true, true) => {
+                *size = max_size;
+                *position = margin.start;
+            }
+        }
+
+        *position += offset;
+
+        self.arrange_cross_axis_range(dim, next_sibling_id, end_before_id, offset, space)
     }
 
     // ======
