@@ -1,5 +1,5 @@
-use crate::Scalar;
 use crate::Fin;
+use crate::Scalar;
 
 /// todo: add guard or lifetime constraint to make this only usable in 1 Context
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,12 +54,14 @@ pub enum Layout<const ND: usize> {
 
 /// flags for being as container for other rectangles
 /// control layout of children
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct AsParentFlags<const ND: usize> {
     /// use flex model or not
     pub layout: Layout<ND>,
-    /// wrap around line or not
+    /// wrap around line when child request that
     pub allow_wrap: bool,
+    /// wrap around line when line too long
+    pub auto_wrap: bool,
     /// start
     /// |[ T ][ E ][ X ][ T ]      |
     /// end
@@ -69,6 +71,17 @@ pub struct AsParentFlags<const ND: usize> {
     /// justify
     /// |[ T ]  [ E ]  [ X ]  [ T ]|
     pub alignment_along_axis: Alignment,
+}
+
+impl<const ND: usize> Default for AsParentFlags<ND> {
+    fn default() -> Self {
+        Self {
+            layout: Default::default(),
+            allow_wrap: true,
+            auto_wrap: true,
+            alignment_along_axis: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -102,7 +115,7 @@ pub struct AsChildFlags<const ND: usize> {
     /// |       -----  |   |  ----- |
     /// |       | E |  | J |        |
     /// |       -----  -----        |
-    /// 
+    ///
     /// note: in the dimension along axis, this value is ignored
     pub alignment_cross_axis: [Alignment; ND],
     /// whether it'll be wrapped to be start of a new line

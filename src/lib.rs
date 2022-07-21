@@ -4,17 +4,17 @@ pub mod error;
 pub mod item;
 pub mod numbers;
 
-use error::*;
-use item::*;
-use numbers::*;
+pub use error::*;
+pub use item::*;
+pub use numbers::*;
 
 pub type Scalar = i16;
 
 #[derive(Debug, Clone)]
 pub struct ItemWithCalcSize<const ND: usize> {
-    item: Item<ND>,
-    position: [Scalar; ND],
-    size: [Scalar; ND],
+    pub item: Item<ND>,
+    pub position: [Scalar; ND],
+    pub size: [Scalar; ND],
 }
 
 impl<const ND: usize> Default for ItemWithCalcSize<ND> {
@@ -68,8 +68,6 @@ impl<const ND: usize> Context<ND> {
     pub fn layout_item_recursively(&mut self, item_id: Id) -> Result<(), ItemNotFound> {
         for i in 0..ND {
             self.calc_size(item_id, i.try_into().unwrap())?;
-        }
-        for i in 0..ND {
             self.arrange(item_id, i.try_into().unwrap())?;
         }
         Ok(())
@@ -170,21 +168,42 @@ impl<const ND: usize> Context<ND> {
         &mut self,
         item_id: Id,
         dim: Fin<ND>,
-        respect_line_break: bool,
+        allow_wrap: bool,
     ) -> Result<Scalar, ItemNotFound> {
-        let mut acc_size = 0;
-        let mut hist_max_size = 0;
-        let mut last_margin_end = 0;
-        self.calc_extent_margins(item_id, dim, |xx| {
-            if respect_line_break && xx.flags.as_child.wrap_me {
-                hist_max_size = Scalar::max(acc_size, hist_max_size);
-                acc_size = 0;
+        let mut max_line_size = 0;
+        let item = self.item_err(item_id)?;
+        let mut current_child_id = item.first_child;
+
+        while current_child_id.is_some() {
+            let line_start = current_child_id;
+            let mut acc_line_size = 0;
+            let mut last_margin_end = 0;
+
+            'arrange_one_line: while let Some(child_id) = current_child_id {
+                let xx = self.item_rect_mut_err(child_id)?;
+                let item = &mut xx.item;
+                let size = xx.size[dim.into_usize()];
+                let margin = item.margins[dim.into_usize()].clone();
+                let next_sibling_id = item.next_sibling;
+
+                let first_in_line = line_start == current_child_id;
+                if (allow_wrap && item.flags.as_child.wrap_me)
+                    && !first_in_line
+                {
+                    break 'arrange_one_line;
+                }
+                let min_inner_margin = Scalar::max(last_margin_end, margin.start);
+                
+                acc_line_size += min_inner_margin;
+                last_margin_end = margin.end;
+                acc_line_size += size;
+
+                current_child_id = next_sibling_id;
             }
-            acc_size += Scalar::max(last_margin_end, xx.margin_start) + xx.extent + xx.margin_end;
-            last_margin_end = xx.margin_end;
-            Ok(())
-        })?;
-        Ok(Scalar::max(acc_size, hist_max_size))
+            acc_line_size += last_margin_end;
+            max_line_size = Scalar::max(max_line_size, acc_line_size);
+        }
+        Ok(max_line_size)
     }
 
     fn arrange(&mut self, item_id: Id, dim: Fin<ND>) -> Result<(), ItemNotFound> {
@@ -200,7 +219,7 @@ impl<const ND: usize> Context<ND> {
                         item_id,
                         dim,
                         flags_as_parent.allow_wrap,
-                        flags_as_parent.allow_wrap,
+                        flags_as_parent.auto_wrap,
                     )?;
                 } else {
                     self.arrange_cross_axis(item_id, dim, flags_as_parent.allow_wrap)?;
@@ -230,6 +249,7 @@ impl<const ND: usize> Context<ND> {
         let pxx = self.item_rect_mut_err(item_id)?;
         let offset = pxx.position[dim.into_usize()];
         let space = pxx.size[dim.into_usize()];
+
         let alignment = pxx.item.flags.as_parent.alignment_along_axis;
 
         let mut current_child_id = pxx.item.first_child;
@@ -248,12 +268,11 @@ impl<const ND: usize> Context<ND> {
                 let margin = item.margins[dim.into_usize()].clone();
                 let next_sibling_id = item.next_sibling;
 
-                let first_in_line = line_start != current_child_id;
+                let first_in_line = line_start == current_child_id;
                 let break_early = acc_line_size + last_margin_end > space;
                 if ((allow_wrap && item.flags.as_child.wrap_me) || (auto_wrap && break_early))
-                    && first_in_line
+                    && !first_in_line
                 {
-                    acc_line_size += last_margin_end;
                     break 'arrange_one_line;
                 }
                 items_on_this_line += 1;
@@ -265,6 +284,7 @@ impl<const ND: usize> Context<ND> {
 
                 current_child_id = next_sibling_id;
             }
+            acc_line_size += last_margin_end;
 
             if items_on_this_line > 0 {
                 let extra_space = space - acc_line_size;
@@ -328,6 +348,9 @@ impl<const ND: usize> Context<ND> {
         let space = pxx.size[dim.into_usize()];
         let mut current_child_id = pxx.item.first_child;
 
+        // TODO: auto wrapped items not handled this way
+        // should add a calculated "wrapped" flag
+
         // if not allowed to wrap, then process all children in one go without backtracking
         if !allow_wrap {
             return self.arrange_cross_axis_range(dim, current_child_id, None, offset, space);
@@ -343,9 +366,9 @@ impl<const ND: usize> Context<ND> {
             'arrange_one_line: while let Some(child_id) = current_child_id {
                 let xx = self.item_rect_mut_err(child_id)?;
                 let item = &mut xx.item;
-                let size = &mut xx.size[dim.into_usize()];
+                let size = xx.size[dim.into_usize()];
                 let margin = item.margins[dim.into_usize()].clone();
-                let size_with_margin = *size + margin.start + margin.end;
+                let size_with_margin = size + margin.start + margin.end;
                 let next_sibling_id = item.next_sibling;
 
                 if line_start != current_child_id && item.flags.as_child.wrap_me {
@@ -362,15 +385,15 @@ impl<const ND: usize> Context<ND> {
                 line_start,
                 current_child_id,
                 offset + acc_cross_axis_size,
-                max_cross_axis_size,
+                space,
             )?;
             acc_cross_axis_size += max_cross_axis_size;
         }
 
-        let pxx = self.item_rect_mut_err(item_id)?;
-        let space = &mut pxx.size[dim.into_usize()];
+        // let pxx = self.item_rect_mut_err(item_id)?;
+        // let space = &mut pxx.size[dim.into_usize()];
         // TODO: is this really necessary?
-        *space = acc_cross_axis_size;
+        // *space = acc_cross_axis_size;
 
         Ok(())
     }
@@ -433,19 +456,19 @@ impl<const ND: usize> Context<ND> {
     // vvvvvv
 
     /// add new item with no parent and no children
-    pub fn item_new(&mut self) -> &Id {
+    pub fn item_new(&mut self) -> Id {
         self.last_id.0 += 1;
         self.items.insert(self.last_id, Default::default());
-        &self.last_id
+        self.last_id
     }
 
     /// add new item with no parent and no children
-    pub fn item_new_mut(&mut self, before_insert: impl FnOnce(&mut Item<ND>)) -> &Id {
+    pub fn item_new_mut(&mut self, before_insert: impl FnOnce(&mut Item<ND>)) -> Id {
         self.last_id.0 += 1;
         let mut xx: ItemWithCalcSize<ND> = Default::default();
         before_insert(&mut xx.item);
         self.items.insert(self.last_id, xx);
-        &self.last_id
+        self.last_id
     }
 
     // ======
@@ -588,7 +611,7 @@ fn enlarge_gaps_inbetween(gaps_before: &mut Vec<(Id, i16)>, extra_space: i16) {
     let segment = extra_space / n;
     let extra_space = extra_space - segment * n;
 
-    for i in 1..n {
+    for i in 1..n+1 {
         gaps_before[i as usize].1 += if i <= extra_space {
             segment + 1
         } else {

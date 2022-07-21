@@ -12,3 +12,7 @@ edition = "2021"
 [lib]
 name = "flexlayout"
 path = "src/lib.rs"
+
+[[example]]
+name = "simple"
+path = "examples/simple/Cargo.toml"
